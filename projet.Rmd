@@ -1,0 +1,178 @@
+---
+title: "Projet Séries temporelles"
+author: "Agathe ROSENZWEIG"
+date: "07/05/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(tseries)
+library(zoo)
+library(portes)
+library(astsa)
+library(forecast)
+library(xts)
+library(dplyr)
+library(data.table)
+library(questionr)
+library(tidyverse)
+```
+
+
+##Partie I : Importation de la série et stationnarité
+```{r}
+data <- read.csv("valeurs_mensuelles.csv", sep = ";")
+data <- rename.variable(data, "LibellÃ.", "Date")
+data <- rename.variable(data,colnames(data)[2], "valeur")
+
+print(table(data$Codes))
+#Ils ont tous la modalité A, ce qui correspond à une valeur normale, d'après la table caractéristique
+
+data <- data[4:nrow(data), c("Date", "valeur")]
+data$Date <- as.Date(paste(data$Date,"-01",sep=""))
+valeur_zoo <- zoo(as.numeric(data$valeur), order.by = data$Date) 
+```
+
+
+```{r}
+
+plot(valeur_zoo, col = "blue", xlab = "Temps", ylab = "valeurs")
+plot(valeur_zoo[1: 12*10], col = "blue", xlab = "Temps", ylab = "valeurs", main = "Zoom 1991-2001")
+plot(valeur_zoo[12*20: nrow(data)], col = "blue", xlab = "Temps", ylab = "valeurs", main = "Zoom 2010 -2020")
+```
+
+```{r}
+
+seriediff <- diff(as.numeric(data$valeur),differences = 1)
+
+plot(zoo(seriediff, order.by = data$Date), col = "blue", xlab = "Temps", ylab = "valeurs", main = "Différence à l'ordre 1")
+
+
+#seriediff <- diff(as.numeric(data$valeur), differences = 2)
+#plot(zoo(seriediff, order.by = data$Date), col = "blue", xlab = "Temps", ylab = "valeurs", main = "Différence à l'ordre 2 ")
+
+```
+```{r}
+adf.test(seriediff, alternative = c("stationary"))
+pp.test(seriediff, alternative = c("stationary"))
+kpss.test(seriediff, null = "Level")
+
+```
+
+
+
+##Partie II : ARMA
+
+
+```{r}
+acf(seriediff, type ="correlation" ,plot = TRUE, lag = 24)
+
+#MA(2)
+
+acf(seriediff, type ="partial",plot = TRUE, lag = 20)
+#AR(5)
+ 
+```
+
+
+```{r}
+
+Qtests <- function(series, k, fitdf=0) {
+  pvals <- apply(matrix(1:k), 1, FUN=function(l) {
+    pval <- if (l<=fitdf) NA else Box.test(series, lag=l, type="Ljung-Box",fitdf=fitdf)$p.value
+    return(c("lag"=l,"pval"=pval))})
+  return(t(pvals))
+}
+
+```
+
+
+Tests des porte-manteaux
+```{r}
+
+pmax = 2
+qmax = 1
+for (l in (1:qmax)){
+  print(c("AR",l))
+ print(Qtests(arima(seriediff, c(l,0,0))$residuals,24, 5))
+}
+
+for (l in (1:pmax)){
+  print(c("MA",l))
+ print(Qtests(arima(seriediff, c(0,0,l))$residuals,24, 5))
+}
+
+#AR(3), AR(4) et AR(5) présentent des p-values supérieures à 5% jusqu'à l'ordre 24. 
+
+for (l in (1:pmax)){
+  for (j in (1:qmax)){
+    print(c("ARMA",l,j))
+    print(Qtests(arima(seriediff, c(j,0,l))$residuals,24, 5))
+  }
+}
+
+#ARMA(2,1), ARMA(2,2), ARMA(3,1), ARMA(3,2), ARMA(4,1), ARMA(4,2), ARMA(5,1), ARMA(5,2)
+```
+
+
+Significativité des coefficients
+
+```{r}
+signif <- function(estim){
+  coef <- estim$coef
+  se <- sqrt(diag(estim$var.coef))
+  t <- coef/se
+  pval <- (1-pnorm(abs(t)))*2
+  return(rbind(coef,se,pval))
+}
+```
+
+
+```{r}
+for (l in (1:pmax)){
+  for (j in (0:qmax)){
+    print(c("ARMA",l,j))
+    print(signif(arima(seriediff, c(j,0,l))))
+  }
+}
+```
+
+```{r}
+ma1 <- arima(seriediff, c(0,0,1))
+ma2 <- arima(seriediff, c(0,0,2))
+models <- c("ma1","ma2"); names(models) <- models
+apply(as.matrix(models),1, function(m) c("AIC"=AIC(get(m)), "BIC"=BIC(get(m))))
+
+```
+Partie III
+
+```{r}
+sig <- ma1$var.coef[1]
+phi <- ma1$coef[1]
+xt <- seriediff[1]
+alpha <- 0.05 
+beta <- 1 - sqrt(1 - alpha)
+q <- qnorm(1- (beta/2))
+
+
+borne_inf_1 <- -q*sig + phi*xt
+borne_sup_1 <- q*sig + phi*xt
+xt1 <- phi*xt 
+xt2 <- phi*xt1
+
+borne_inf_2 <- -q*sig*(1+ phi) + phi**2*xt
+borne_sup_2 <- q*sig*( 1+ phi) + phi**2*xt
+
+
+fcast <- forecast(ma2, h = 4)
+plot(fcast, xlim = c(370,400))
+
+```
+
+
+
